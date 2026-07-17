@@ -85,7 +85,10 @@ def analyze_multiple_projects(client):
 
                 try:
                     # Use the native gitingest package
-                    summary, tree, content = ingest(repo_url)
+                    summary, tree, content = ingest(
+                        repo_url,
+                        include_patterns={"**/*", ".gitignore"}
+                    )
                     # Combine the output into a single string
                     repo_text = f"{summary}\n\n{tree}\n\n{content}"
 
