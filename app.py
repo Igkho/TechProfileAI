@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 USE_CACHE = False  # Set to False to bypass local storage and force fresh web fetches
+REPORT_CACHE_FILE = os.path.join("gitingest_cache", "cached_report.md")
 
 # Configure Logging
 logging.basicConfig(
@@ -19,7 +20,28 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     force=True
 )
+def load_cached_report():
+    """Loads the cached Markdown report from local storage if available."""
+    if os.path.exists(REPORT_CACHE_FILE):
+        try:
+            with open(REPORT_CACHE_FILE, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logging.error(f"Failed to load cached report: {e}")
+    return None
 
+
+def save_cached_report(report_text):
+    """Saves the generated Markdown report to local storage."""
+    cache_dir = os.path.dirname(REPORT_CACHE_FILE)
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir, exist_ok=True)
+    try:
+        with open(REPORT_CACHE_FILE, "w", encoding="utf-8") as f:
+            f.write(report_text)
+        logging.info("Successfully cached report to disk.")
+    except Exception as e:
+        logging.error(f"Failed to save report to cache: {e}")
 
 def send_email_report(prompt, llm_result, sender, password, receiver):
     """Dispatches the prompt and the LLM result to your personal email."""
@@ -48,7 +70,8 @@ def analyze_multiple_projects(client):
         "https://github.com/Igkho/ZeroHostCopyInference",
         "https://github.com/Igkho/Spline",
         "https://github.com/Igkho/CropAndWeedDetection",
-        "https://github.com/Igkho/Pendulum"
+        "https://github.com/Igkho/Pendulum",
+        "https://github.com/Igkho/TechProfileAI/"
     ]
 
     combined_context = ""
@@ -135,7 +158,7 @@ def analyze_multiple_projects(client):
             # 6. Query Gemini
             # Pass the config into the generate_content call
             response = client.models.generate_content(
-                model="gemini-3.5-flash",
+                model="gemini-3.6-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     thinking_config=types.ThinkingConfig(
@@ -162,14 +185,52 @@ def analyze_multiple_projects(client):
             logging.error(f"❌ An error occurred during report generation: {e}")
             return None, False
 
+from fpdf import FPDF
+import markdown
+REPORT_TITLE = "📊 Technical Analysis Report"
 
+def create_pdf(report_text):
+    pdf = FPDF()
+    pdf.add_page()
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 1. Define paths to all four variants
+    font_regular = os.path.join(base_dir, "fonts", "DejaVuSans.ttf")
+    font_bold = os.path.join(base_dir, "fonts", "DejaVuSans-Bold.ttf")
+    font_italic = os.path.join(base_dir, "fonts", "DejaVuSans-Oblique.ttf")
+    font_bold_italic = os.path.join(base_dir, "fonts", "DejaVuSans-BoldOblique.ttf")
+
+    # 2. Register them to the "DejaVu" family using the style flags
+    pdf.add_font("DejaVu", "", font_regular)  # Regular
+    pdf.add_font("DejaVu", "B", font_bold)  # Bold
+    pdf.add_font("DejaVu", "I", font_italic)  # Italic
+    pdf.add_font("DejaVu", "BI", font_bold_italic)  # Bold-Italic
+
+    # 3. Set the default font and write HTML
+    pdf.set_font("DejaVu", size=11)
+
+    # Use the unified constant for the PDF title
+    full_report = f"## {REPORT_TITLE}\n\n" + report_text
+
+    # 4. Convert the Markdown text into an HTML string
+    # The 'extra' extension enables support for Markdown tables, nested lists, etc.
+    html_text = markdown.markdown(full_report, extensions=['extra'])
+
+    # 5. Write the HTML directly to the PDF
+    # fpdf2 will automatically translate <h1>, <b>, <ul> etc. into PDF formatting
+    pdf.write_html(html_text)
+
+    # 6. Output as bytes for Streamlit's download button
+    # In fpdf2, pdf.output() without a filename returns a bytearray
+    return bytes(pdf.output())
 # ==========================================
 # STREAMLIT UI
 # ==========================================
 st.set_page_config(page_title="Tech Profile AI Analyzer", page_icon="⚙️")
-st.title("Automated Technical Profile AI Analyzer")
-st.write("Extract code from GitHub, analyze it with Gemini 3.5 Flash, and generate an HR-friendly report.")
-st.info("**Repos analyzed:** ZeroHostCopyInference, Spline, CropAndWeedDetection, Pendulum")
+st.title("Technical Profile AI Analyzer")
+st.write("Extract code from GitHub, analyze it with Gemini 3.6 Flash, and generate an HR-friendly report.")
+st.info("**Repos analyzed:** ZeroHostCopyInference, Spline, CropAndWeedDetection, Pendulum, TechProfileAI")
 
 # Fail fast if secrets are missing
 try:
@@ -183,10 +244,29 @@ except KeyError as e:
     st.info("Ensure your credentials are set in `.streamlit/secrets.toml` locally or in the Streamlit Cloud Settings.")
     st.stop()
 
-if st.button("🚀 Start Analysis", type="primary"):
-    report, email_sent = analyze_multiple_projects(client)
+# Initialize session state from disk cache on app startup
+if "report" not in st.session_state:
+    st.session_state["report"] = load_cached_report()
 
+# Regeneration Trigger Button
+if st.button("🔄 Regenerate report against github portfolio", type="primary"):
+    report, email_sent = analyze_multiple_projects(client)
     if report:
-        st.divider()
-        st.subheader("📊 Technical Analysis Report")
-        st.markdown(report)
+        save_cached_report(report)
+        st.session_state["report"] = report
+        st.rerun()
+
+# Display cached or newly generated report
+if st.session_state["report"]:
+    st.divider()
+    st.subheader(REPORT_TITLE)
+
+    st.markdown(st.session_state["report"])
+    pdf_bytes = create_pdf(st.session_state["report"])
+    st.download_button(
+        label="📄 Download Report as PDF",
+        data=pdf_bytes,
+        file_name="Tech_Profile_Report.pdf",
+        mime="application/pdf",
+        type="primary"
+    )
